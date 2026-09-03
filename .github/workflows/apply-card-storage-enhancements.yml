@@ -1,10 +1,6 @@
 name: Apply flashcard and storage enhancements
 
-on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/apply-card-storage-enhancements.yml'
+on: push
 
 permissions:
   contents: write
@@ -15,182 +11,93 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Patch index.html
+      - name: Add enhancement script
+        shell: bash
         run: |
-          python3 - <<'PY'
+          cat > browser-enhancements.js <<'EOF'
+          (function () {
+            'use strict';
+            function playCardAudio() {
+              const scope = document.querySelector('#view-study') || document;
+              const media = scope.querySelectorAll('audio,video');
+              for (const el of media) {
+                if (el.src || el.currentSrc) {
+                  try { el.currentTime = 0; } catch (e) {}
+                  const p = el.play();
+                  if (p && p.catch) p.catch(function () {});
+                  return true;
+                }
+              }
+              const btn = scope.querySelector('.play-btn');
+              if (btn && !btn.disabled) { try { btn.click(); return true; } catch (e) {} }
+              return false;
+            }
+            let timer;
+            function autoplay() { clearTimeout(timer); timer = setTimeout(playCardAudio, 100); }
+            document.addEventListener('click', function (e) {
+              if (e.target.closest('#view-study') || (e.target.closest('nav.tabs') && e.target.closest('button[data-tab="study"]'))) autoplay();
+            }, true);
+            document.addEventListener('keydown', function (e) {
+              if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === ' ') autoplay();
+            }, true);
+            const study = document.getElementById('view-study');
+            if (study) new MutationObserver(autoplay).observe(study, {childList:true,subtree:true,attributes:true});
+
+            function esc(s) { return String(s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+            async function refreshStorage() {
+              const list = document.getElementById('storageList');
+              if (!list) return;
+              const rows = [];
+              for (let i=0; i<localStorage.length; i++) {
+                const key = localStorage.key(i); let value = '';
+                try { value = localStorage.getItem(key) || ''; } catch(e) {}
+                rows.push({type:'LocalStorage',name:key,size:value.length});
+              }
+              if (window.indexedDB && indexedDB.databases) {
+                try { const dbs = await indexedDB.databases(); dbs.forEach(db => { if (db.name) rows.push({type:'IndexedDB',name:db.name}); }); } catch(e) {}
+              }
+              if (!rows.length) { list.innerHTML = '<div class="storage-empty">No browser-stored data found.</div>'; return; }
+              list.innerHTML = rows.map(r => {
+                const attr = encodeURIComponent(r.name);
+                const meta = r.type + (r.size == null ? '' : ' · ' + r.size.toLocaleString() + ' characters');
+                const action = r.type === 'LocalStorage' ? '<button class="btn ghost small" data-storage-local="'+attr+'">Delete</button>' : '<button class="btn ghost small" data-storage-db="'+attr+'">Delete DB</button>';
+                return '<div class="storage-row"><div><div class="storage-name">'+esc(r.name)+'</div><div class="storage-meta">'+esc(meta)+'</div></div>'+action+'</div>';
+              }).join('');
+            }
+            function mountStorage() {
+              if (document.getElementById('browserStorageManager')) { refreshStorage(); return; }
+              const host = document.querySelector('#view-import .divider') || document.querySelector('#view-import');
+              if (!host) return setTimeout(mountStorage, 300);
+              const box = document.createElement('div');
+              box.id = 'browserStorageManager';
+              box.innerHTML = '<div class="browser-storage-panel"><div class="browser-storage-head"><div><h3 style="font-family:Fraunces,serif;font-size:17px;margin:0 0 3px">Browser storage</h3><div class="hint" style="margin:0">Manually remove data saved in this browser. This does not delete files from your computer.</div></div><button class="btn ghost small" id="refreshStorageBtn">Refresh</button></div><div class="storage-list" id="storageList"><div class="storage-empty">Loading…</div></div><div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" id="clearLocalStorageBtn">Clear local browser data</button><button class="btn ghost small" id="clearIndexedDbBtn">Clear IndexedDB databases</button></div></div>';
+              host.parentNode.insertBefore(box, host);
+              document.getElementById('refreshStorageBtn').addEventListener('click', refreshStorage);
+              document.getElementById('clearLocalStorageBtn').addEventListener('click', function(){ if(confirm('Clear ALL localStorage data for this website? Your saved deck may be removed.')) { localStorage.clear(); refreshStorage(); } });
+              document.getElementById('clearIndexedDbBtn').addEventListener('click', async function(){ if(!indexedDB.databases || !confirm('Clear ALL IndexedDB databases for this website? Imported audio/data may be removed.')) return; const dbs=await indexedDB.databases(); dbs.forEach(db=>db.name&&indexedDB.deleteDatabase(db.name)); setTimeout(refreshStorage,500); });
+              refreshStorage();
+            }
+            document.addEventListener('click', function(e){
+              const l=e.target.closest('[data-storage-local]');
+              if(l){ const k=decodeURIComponent(l.dataset.storageLocal); if(confirm('Delete browser data for “'+k+'”?')){localStorage.removeItem(k);refreshStorage();} }
+              const d=e.target.closest('[data-storage-db]');
+              if(d){ const k=decodeURIComponent(d.dataset.storageDb); if(confirm('Delete IndexedDB database “'+k+'”? This can remove imported audio/data.')){indexedDB.deleteDatabase(k);setTimeout(refreshStorage,300);} }
+            });
+            function addStyles(){
+              if(document.getElementById('browser-storage-style')) return;
+              const st=document.createElement('style'); st.id='browser-storage-style'; st.textContent='.browser-storage-panel{margin:18px 0 0;border-top:1px solid var(--line);padding-top:18px}.browser-storage-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.storage-list{margin-top:10px;border:1px solid var(--line);border-radius:5px;background:#fffdf8;overflow:hidden}.storage-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border-bottom:1px solid #ecdfc4;font-size:12px}.storage-row:last-child{border-bottom:0}.storage-name{font-weight:600;overflow-wrap:anywhere}.storage-meta{color:var(--ink-soft);font-size:11px;margin-top:2px}.storage-empty{padding:12px;color:var(--ink-soft);font-size:12px;text-align:center}'; document.head.appendChild(st);
+            }
+            function init(){ addStyles(); mountStorage(); autoplay(); }
+            if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
+          })();
+          EOF
+          if ! grep -q 'browser-enhancements.js' index.html; then
+            python3 - <<'PY'
           from pathlib import Path
-          p = Path('index.html')
-          s = p.read_text(encoding='utf-8')
-          marker = '<!-- CARD_AUTOPLAY_STORAGE_ENHANCEMENTS -->'
-          if marker in s:
-              print('Enhancements already present')
-              raise SystemExit(0)
-
-          css = r'''\n<style id="card-autoplay-storage-css">
-            .browser-storage-panel{margin-top:18px;border-top:1px solid var(--line);padding-top:18px}
-            .browser-storage-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-            .storage-list{margin-top:10px;border:1px solid var(--line);border-radius:5px;background:#fffdf8;overflow:hidden}
-            .storage-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 11px;border-bottom:1px solid #ecdfc4;font-size:12px}
-            .storage-row:last-child{border-bottom:0}
-            .storage-name{font-weight:600;overflow-wrap:anywhere}
-            .storage-meta{color:var(--ink-soft);font-size:11px;margin-top:2px}
-            .storage-empty{padding:12px;color:var(--ink-soft);font-size:12px;text-align:center}
-            .autoplay-note{font-size:11px;color:var(--ink-soft);margin-top:7px}
-          </style>\n'''
-
-          panel = r'''\n<section class="browser-storage-panel" id="browserStorageManager">
-  <div class="browser-storage-head">
-    <div>
-      <h3 style="font-family:'Fraunces',serif;font-size:17px;margin:0 0 3px">Browser storage</h3>
-      <div class="hint" style="margin:0">Manually remove imported data saved in this browser. This does not delete files from your computer.</div>
-    </div>
-    <button class="btn ghost small" id="refreshStorageBtn" type="button">Refresh</button>
-  </div>
-  <div class="storage-list" id="storageList"><div class="storage-empty">Loading…</div></div>
-  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-    <button class="btn small" id="clearLocalStorageBtn" type="button">Clear local browser data</button>
-    <button class="btn ghost small" id="clearIndexedDbBtn" type="button">Clear IndexedDB databases</button>
-  </div>
-</section>\n'''
-
-          js = r'''\n<script id="card-autoplay-storage-js">
-(function(){
-  'use strict';
-  const marker = 'CARD_AUTOPLAY_STORAGE_ENHANCEMENTS';
-
-  function playExistingCardAudio(){
-    const scope = document.querySelector('#view-study') || document.body;
-    const media = scope.querySelectorAll('audio, video');
-    for (const el of media) {
-      if (el.src || el.currentSrc) {
-        try { el.currentTime = 0; } catch(e) {}
-        const promise = el.play();
-        if (promise && promise.catch) promise.catch(function(){});
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function clickExistingPlayControl(){
-    const scope = document.querySelector('#view-study') || document.body;
-    const btn = scope.querySelector('.play-btn');
-    if (btn && !btn.disabled) {
-      try { btn.click(); return true; } catch(e) {}
-    }
-    return false;
-  }
-
-  let autoplayTimer = null;
-  function autoplayCard(){
-    clearTimeout(autoplayTimer);
-    autoplayTimer = setTimeout(function(){
-      if (!playExistingCardAudio()) clickExistingPlayControl();
-    }, 80);
-  }
-
-  document.addEventListener('click', function(e){
-    const t = e.target;
-    if (t && (t.closest('#view-study') || (t.closest('nav.tabs') && t.dataset && t.dataset.tab === 'study'))) {
-      setTimeout(autoplayCard, 100);
-    }
-  }, true);
-  document.addEventListener('keydown', function(e){
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === ' ') setTimeout(autoplayCard, 100);
-  }, true);
-
-  const study = document.getElementById('view-study');
-  if (study) new MutationObserver(autoplayCard).observe(study, {childList:true, subtree:true, attributes:true});
-  setTimeout(autoplayCard, 300);
-
-  async function listStorage(){
-    const list = document.getElementById('storageList');
-    if (!list) return;
-    const rows = [];
-    for (let i=0;i<localStorage.length;i++) {
-      const key = localStorage.key(i);
-      let value = '';
-      try { value = localStorage.getItem(key) || ''; } catch(e) {}
-      rows.push({type:'LocalStorage', key, size:value.length});
-    }
-    if (indexedDB && indexedDB.databases) {
-      try {
-        const dbs = await indexedDB.databases();
-        for (const db of dbs) if (db.name) rows.push({type:'IndexedDB', key:db.name, size:null});
-      } catch(e) {}
-    }
-    if (!rows.length) { list.innerHTML='<div class="storage-empty">No browser-stored data found.</div>'; return; }
-    list.innerHTML = rows.map((r,i)=>{
-      const meta = r.type + (r.size == null ? '' : ' · ' + r.size.toLocaleString() + ' characters');
-      const encoded = encodeURIComponent(r.key);
-      const button = r.type === 'LocalStorage'
-        ? '<button class="btn ghost small" data-delete-local="'+encoded+'" type="button">Delete</button>'
-        : '<button class="btn ghost small" data-delete-db="'+encoded+'" type="button">Delete DB</button>';
-      return '<div class="storage-row"><div><div class="storage-name">'+escapeHtml(r.key)+'</div><div class="storage-meta">'+escapeHtml(meta)+'</div></div>'+button+'</div>';
-    }).join('');
-  }
-  function escapeHtml(x){ return String(x).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
-
-  document.addEventListener('click', async function(e){
-    const local = e.target.closest('[data-delete-local]');
-    if (local) {
-      const key = decodeURIComponent(local.dataset.deleteLocal);
-      if (confirm('Delete browser data for “'+key+'”?')) { localStorage.removeItem(key); await listStorage(); }
-      return;
-    }
-    const db = e.target.closest('[data-delete-db]');
-    if (db) {
-      const name = decodeURIComponent(db.dataset.deleteDb);
-      if (confirm('Delete the IndexedDB database “'+name+'”? This can remove imported audio/data stored in it.')) {
-        try { indexedDB.deleteDatabase(name); } catch(e) {}
-        setTimeout(listStorage, 250);
-      }
-    }
-  });
-  document.getElementById('refreshStorageBtn')?.addEventListener('click', listStorage);
-  document.getElementById('clearLocalStorageBtn')?.addEventListener('click', async function(){
-    if (confirm('Clear ALL localStorage data for this website? Your saved deck may be removed.')) { localStorage.clear(); await listStorage(); }
-  });
-  document.getElementById('clearIndexedDbBtn')?.addEventListener('click', async function(){
-    if (!indexedDB || !indexedDB.databases) return alert('This browser does not expose the database list.');
-    if (!confirm('Clear ALL IndexedDB databases for this website? Imported audio/data may be removed.')) return;
-    try { const dbs = await indexedDB.databases(); dbs.forEach(db=>{if(db.name) indexedDB.deleteDatabase(db.name);}); } catch(e) {}
-    setTimeout(listStorage, 500);
-  });
-
-  function mountStorageManager(){
-    if (document.getElementById('browserStorageManager')) { listStorage(); return; }
-    const importView = document.getElementById('view-import');
-    if (!importView) return setTimeout(mountStorageManager, 300);
-    const section = document.createElement('section');
-    section.innerHTML = marker + `__PANEL__`;
-    const real = section.firstElementChild;
-    real.innerHTML = `__PANEL__`;
-  }
-
-  // The HTML panel is injected by the build patch immediately before this script.
-  listStorage();
-})();
-</script>\n'''
-
-          # Put CSS in head and panel in Import view, then script before body close.
-          s = s.replace('</head>', css + '</head>', 1)
-          s = s.replace('</section>\n\n  <!-- ============ ALL WORDS', panel + '</section>\n\n  <!-- ============ ALL WORDS', 1)
-          # Fallback: if the exact section marker differs, append panel before first view close.
-          if 'id="browserStorageManager"' not in s:
-              s = s.replace('</body>', panel + '</body>', 1)
-          js = js.replace('__PANEL__', '')
-          s = s.replace('</body>', js.replace('  // The HTML panel is injected by the build patch immediately before this script.\n', '') + '</body>', 1)
-          s = s.replace(marker, marker, 1)
-          p.write_text(s, encoding='utf-8')
-          print('Patched index.html')
+          p=Path('index.html'); s=p.read_text(encoding='utf-8'); s=s.replace('</body>','<script src="browser-enhancements.js"></script>\n</body>',1); p.write_text(s,encoding='utf-8')
           PY
-
-      - name: Commit patched site
-        run: |
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add index.html
-          git diff --cached --quiet && exit 0
-          git commit -m 'Enable flashcard audio autoplay and browser storage management'
-          git push
+          git add index.html browser-enhancements.js
+          git diff --cached --quiet || (git commit -m 'Enable flashcard autoplay and browser storage manager' && git push)
