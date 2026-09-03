@@ -1,0 +1,40 @@
+name: Add imported-document deletion UI
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - '.github/workflows/add-import-delete.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch private app once
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('index.html')
+          s=p.read_text(encoding='utf-8')
+          marker='<!-- imported-documents-delete-ui-v1 -->'
+          if marker in s:
+              print('Already patched')
+              raise SystemExit(0)
+          injection=r'''\n<!-- imported-documents-delete-ui-v1 -->\n<script>\n(function(){\n  function addImportedDocumentsPanel(){\n    if(document.getElementById('importedDocsPanel')) return;\n    const importView=document.getElementById('view-import');\n    if(!importView) return;\n    const panel=document.createElement('div');\n    panel.id='importedDocsPanel';\n    panel.className='divider';\n    panel.innerHTML=`\n      <div style="margin-top:22px">\n        <h2 class="section-title">Imported documents</h2>\n        <p class="subtle">Your imported songs are stored in this browser. Delete one document at a time when you no longer need it.</p>\n        <div id="importedDocsList"></div>\n      </div>`;\n    importView.appendChild(panel);\n    renderImportedDocuments();\n  }\n\n  function renderImportedDocuments(){\n    const list=document.getElementById('importedDocsList');\n    if(!list || typeof cards==='undefined') return;\n    const groups=new Map();\n    cards.forEach(c=>{\n      const show=String(c.show||'').trim();\n      const song=String(c.song||'').trim();\n      if(!show && !song) return;\n      const key=show+'\\u0000'+song;\n      if(!groups.has(key)) groups.set(key,{show,song,count:0});\n      groups.get(key).count++;\n    });\n    const rows=[...groups.values()].sort((a,b)=>((a.show+' '+a.song).localeCompare(b.show+' '+b.song)));\n    if(!rows.length){\n      list.innerHTML='<div class="hint">No imported documents found yet.</div>';\n      return;\n    }\n    list.innerHTML=rows.map((g,i)=>{\n      const label=[g.show,g.song].filter(Boolean).join(' — ') || 'Imported document';\n      return `<div data-import-row="${i}" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);flex-wrap:wrap">\n        <div><div style="font-family:'Fraunces',serif;font-weight:600;font-size:15px">${escapeHtml(label)}</div><div class="hint">${g.count} word${g.count===1?'':'s'}</div></div>\n        <button class="btn ghost small" data-delete-import="${i}">Delete document</button>\n      </div>`;\n    }).join('');\n    list.querySelectorAll('[data-delete-import]').forEach(btn=>{\n      btn.addEventListener('click',()=>{\n        const g=rows[Number(btn.dataset.deleteImport)];\n        if(!g) return;\n        const label=[g.show,g.song].filter(Boolean).join(' — ') || 'this document';\n        if(!confirm('Delete '+label+' from this browser?\\n\\nThis removes all vocabulary cards belonging to this imported document.')) return;\n        const keep=cards.filter(c=>!(String(c.show||'').trim()===g.show && String(c.song||'').trim()===g.song));\n        const removed=cards.length-keep.length;\n        cards.length=0; cards.push(...keep);\n        if(typeof persistCards==='function') persistCards();\n        if(typeof renderAll==='function') renderAll();\n        renderImportedDocuments();\n        const msg=document.getElementById('autoGenMsg');\n        if(msg) msg.textContent='Deleted '+removed+' cards from '+label+'.';\n      });\n    });\n  }\n\n  function escapeHtml(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}\n  function refresh(){addImportedDocumentsPanel();renderImportedDocuments();}\n  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',refresh); else refresh();\n})();\n</script>\n'''
+          s=s.replace('</body>', injection+'</body>', 1)
+          p.write_text(s, encoding='utf-8')
+          print('Patched index.html')
+          PY
+      - name: Commit patch
+        run: |
+          if git diff --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git commit -m 'Add manual deletion for imported documents'
+          git push
