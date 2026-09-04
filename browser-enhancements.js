@@ -1,11 +1,58 @@
 (function () {
   'use strict';
 
-  // IMPORTANT: the main app already has the correct audio implementation:
-  // audioMap + findAudioForSong() + playSnippet() + autoPlayAudio.
-  // Do not create a second audio player here. The imported MP3s are Object URLs
-  // held by the main app, so there is no <audio> element for this helper to find.
-  // Leaving autoplay entirely to the main app also avoids hover/mouse re-renders.
+  // Keep the main app's audio model (audioMap + Object URLs), but make playback
+  // behave like the built-in Musical site: stop the previous clip, jump to the
+  // exact LRC start time, stop at the LRC end time, and tolerate small filename
+  // differences such as track numbers and punctuation.
+  function betterSlug(name) {
+    return String(name || '')
+      .normalize('NFC')
+      .toLowerCase()
+      .replace(/\.[^.]+$/, '')
+      .replace(/^\d+[\s._-]*/, '')
+      .replace(/[^a-z0-9äöüß]+/g, '');
+  }
+
+  function findAudio(song) {
+    if (!song) return null;
+    const key = betterSlug(song);
+    if (!key) return null;
+    if (audioMap[key]) return audioMap[key];
+    const keys = Object.keys(audioMap || {});
+    const hit = keys.find(k => k === key || k.includes(key) || key.includes(k));
+    return hit ? audioMap[hit] : null;
+  }
+
+  window.playSnippet = function (card) {
+    if (!card || card.startTime == null) return;
+    const audio = findAudio(card.song);
+    if (!audio || !audio.el) return;
+
+    Object.values(audioMap || {}).forEach(item => {
+      try { item.el.pause(); } catch (e) {}
+      try { item.el.removeAttribute('data-ldm-stop-listener'); } catch (e) {}
+    });
+
+    const el = audio.el;
+    const start = Number(card.startTime);
+    const end = Number(card.endTime != null ? card.endTime : start + 4.5);
+    if (!Number.isFinite(start)) return;
+
+    const stopAt = Number.isFinite(end) && end > start ? end : start + 4.5;
+    try { el.currentTime = start; } catch (e) {}
+
+    const stop = function () {
+      if (el.currentTime >= stopAt) {
+        try { el.pause(); } catch (e) {}
+        el.removeEventListener('timeupdate', stop);
+      }
+    };
+    el.addEventListener('timeupdate', stop);
+
+    const p = el.play();
+    if (p && p.catch) p.catch(function () {});
+  };
 
   function esc(s) {
     return String(s).replace(/[&<>\"']/g, function(c) {
