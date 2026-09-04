@@ -1,10 +1,11 @@
 (function () {
   'use strict';
 
-  // Keep the main app's audio model (audioMap + Object URLs), but make playback
-  // behave like the built-in Musical site: stop the previous clip, jump to the
-  // exact LRC start time, stop at the LRC end time, and tolerate small filename
-  // differences such as track numbers and punctuation.
+  // Match the built-in site's audio behavior: use the MP3 selected by the user,
+  // jump to the exact LRC timestamp, play only that lyric segment, and stop the
+  // previous segment before starting another one.
+  let currentStopper = null;
+
   function betterSlug(name) {
     return String(name || '')
       .normalize('NFC')
@@ -29,25 +30,31 @@
     const audio = findAudio(card.song);
     if (!audio || !audio.el) return;
 
+    if (currentStopper && currentStopper.el) {
+      try { currentStopper.el.removeEventListener('timeupdate', currentStopper.fn); } catch (e) {}
+    }
+    currentStopper = null;
+
     Object.values(audioMap || {}).forEach(item => {
       try { item.el.pause(); } catch (e) {}
-      try { item.el.removeAttribute('data-ldm-stop-listener'); } catch (e) {}
     });
 
     const el = audio.el;
     const start = Number(card.startTime);
-    const end = Number(card.endTime != null ? card.endTime : start + 4.5);
     if (!Number.isFinite(start)) return;
+    const rawEnd = Number(card.endTime != null ? card.endTime : start + 4.5);
+    const stopAt = Number.isFinite(rawEnd) && rawEnd > start ? rawEnd : start + 4.5;
 
-    const stopAt = Number.isFinite(end) && end > start ? end : start + 4.5;
     try { el.currentTime = start; } catch (e) {}
 
     const stop = function () {
       if (el.currentTime >= stopAt) {
         try { el.pause(); } catch (e) {}
-        el.removeEventListener('timeupdate', stop);
+        try { el.removeEventListener('timeupdate', stop); } catch (e) {}
+        if (currentStopper && currentStopper.el === el && currentStopper.fn === stop) currentStopper = null;
       }
     };
+    currentStopper = { el: el, fn: stop };
     el.addEventListener('timeupdate', stop);
 
     const p = el.play();
